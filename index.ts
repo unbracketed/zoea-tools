@@ -392,7 +392,16 @@ function formatFlag(name: string, value: unknown): string[] {
 	return [flag, String(value)];
 }
 
-async function buildShellCommand(tool: ToolRef, params: Record<string, unknown>): Promise<{ cwd: string; commandText: string }> {
+type BuildShellCommandOptions = {
+	sessionCwd?: string;
+	runId: string;
+};
+
+async function buildShellCommand(
+	tool: ToolRef,
+	params: Record<string, unknown>,
+	options: BuildShellCommandOptions,
+): Promise<{ cwd: string; commandText: string; runId: string }> {
 	const effectiveCwd = tool.tool.cwd ? resolveFrom(tool.manifestDir, tool.tool.cwd) : tool.manifestDir;
 	const effectiveParams = applyDefaults(tool, params);
 	const argv: string[] = [];
@@ -412,23 +421,89 @@ async function buildShellCommand(tool: ToolRef, params: Record<string, unknown>)
 		? [tool.tool.command, ...argv.slice(1).map(shellQuote)].join(" ")
 		: argv.map(shellQuote).join(" ");
 
-	const zoeaDir= process.env.ZOEA_DIR ?? ".zoea";
-	const envEntries = {
+	const zoeaDir = process.env.ZOEA_DIR ?? ".zoea";
+	// ZOEA_PROJECT_DIR pins zoea-core's project root to the session's
+	// working dir. Without it, zoea-core falls back to process.cwd(),
+	// which is the tool's own cwd (typically the manifest's parent like
+	// `<project>/.zoea`) — yielding `<project>/.zoea/.zoea/output/...`.
+	const envEntries: Record<string, string | undefined> = {
 		ZOEA_DIR: zoeaDir,
 		ZOEA_TOOL_MANIFEST: tool.manifestPath,
 		ZOEA_TOOL_NAME: tool.name,
+		ZOEA_RUN_ID: options.runId,
+		ZOEA_EMIT_RESULT_SENTINEL: "1",
+		ZOEA_SESSION_CWD: options.sessionCwd,
+		ZOEA_PROJECT_DIR: options.sessionCwd,
 		...(tool.tool.env ?? {}),
 	};
 
 	const exports = Object.entries(envEntries)
-		.filter(([, value]) => value !== undefined)
+		.filter(([, value]) => value !== undefined && value !== "")
 		.map(([key, value]) => `export ${key}=${shellQuote(String(value))}`)
 		.join("\n");
 
 	return {
 		cwd: effectiveCwd,
 		commandText: `${exports}\n${shellCommand}`,
+		runId: options.runId,
 	};
+}
+
+const RESULT_SENTINEL_PREFIX = "__ZOEA_RESULT__";
+const RESULT_SENTINEL_RE = /^__ZOEA_RESULT__ (\{.*\})$/gm;
+
+type ZoeaArtifactSentinel = {
+	name: string;
+	relative_path: string;
+	media_type?: string | null;
+	bytes?: number;
+	metadata?: Record<string, unknown> | null;
+};
+
+type ZoeaResultSentinel = {
+	version: number;
+	run_id: string;
+	tool_name: string;
+	status: "success" | "error" | "skipped";
+	summary: string;
+	result_path: string;
+	artifacts: ZoeaArtifactSentinel[];
+};
+
+type ZoeaToolDetails = {
+	version: 1;
+	run_id: string;
+	results: ZoeaResultSentinel[];
+};
+
+function extractSentinels(stdout: string): { results: ZoeaResultSentinel[]; cleaned: string } {
+	if (!stdout.includes(RESULT_SENTINEL_PREFIX)) return { results: [], cleaned: stdout };
+	const results: ZoeaResultSentinel[] = [];
+	RESULT_SENTINEL_RE.lastIndex = 0;
+	let match: RegExpExecArray | null;
+	while ((match = RESULT_SENTINEL_RE.exec(stdout)) !== null) {
+		try {
+			const parsed = JSON.parse(match[1]) as ZoeaResultSentinel;
+			if (parsed && typeof parsed === "object" && parsed.version === 1) {
+				results.push(parsed);
+			}
+		} catch {
+			// Malformed sentinel: leave it in stdout so diagnostic output is visible.
+		}
+	}
+	const cleaned = stdout.replace(RESULT_SENTINEL_RE, "").replace(/\n{3,}/g, "\n\n");
+	return { results, cleaned };
+}
+
+function buildZoeaDetails(runId: string, results: ZoeaResultSentinel[]): ZoeaToolDetails | undefined {
+	if (results.length === 0) return undefined;
+	return { version: 1, run_id: runId, results };
+}
+
+function generateRunId(): string {
+	const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+	const suffix = Math.random().toString(16).slice(2, 10);
+	return `${timestamp}-${suffix}`;
 }
 
 function summarizeStream(label: string, content: string): string | null {
@@ -490,14 +565,21 @@ export default async function zoeaTools(pi: ExtensionAPI): Promise<void> {
 			promptSnippet: toolPromptSnippet(tool),
 			parameters: buildParameterSchema(tool.tool.inputs),
 			async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-				const shell = await buildShellCommand(tool, params as Record<string, unknown>, ctx.cwd);
+				const runId = process.env.ZOEA_RUN_ID ?? generateRunId();
+				const shell = await buildShellCommand(tool, params as Record<string, unknown>, {
+					sessionCwd: ctx.cwd,
+					runId,
+				});
 				const result = await pi.exec("bash", ["-lc", shell.commandText], {
 					signal,
 					timeout: tool.tool.timeout_ms,
 					cwd: shell.cwd,
 				});
 
-				const text = buildResultText(tool, result.stdout, result.stderr, result.code);
+				const { results: sentinels, cleaned } = extractSentinels(result.stdout);
+				const text = buildResultText(tool, cleaned, result.stderr, result.code);
+				const zoea = buildZoeaDetails(runId, sentinels);
+
 				if (result.code !== 0) throw new Error(text);
 
 				return {
@@ -508,6 +590,7 @@ export default async function zoeaTools(pi: ExtensionAPI): Promise<void> {
 						cwd: shell.cwd,
 						code: result.code,
 						killed: result.killed,
+						...(zoea ? { zoea } : {}),
 					},
 				};
 			},
