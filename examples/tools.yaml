@@ -1,0 +1,10 @@
+version: 1
+
+tools:
+  zoea_env_dump:
+    description: Print the current Zoea environment configuration (all ZOEA_* env vars) for the running session
+    command: 'env | grep -E "^ZOEA_" | sort'
+
+  showboat_help:
+    description: Show the help message for the showboat tool
+    command: 'uvx showboat --help'

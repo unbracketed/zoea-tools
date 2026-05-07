@@ -1,0 +1,24 @@
+{
+  "name": "zoea-tools",
+  "version": "0.1.0",
+  "description": "Pi package that discovers declarative tool manifests and registers them as custom tools.",
+  "keywords": ["pi-package", "zoea", "tools"],
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@sinclair/typebox": "*"
+  },
+  "dependencies": {
+    "toml": "^3.0.0",
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "files": ["index.ts", "README.md", "examples"]
+}
