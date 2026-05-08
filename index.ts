@@ -621,4 +621,20 @@ export default async function zoeaTools(pi: ExtensionAPI): Promise<void> {
 			});
 		},
 	});
+
+	pi.registerCommand("zoea-introspect", {
+		description: "Emit a structured snapshot of registered commands and tools (used by zoea-server boot-time discovery)",
+		handler: async () => {
+			pi.sendMessage({
+				customType: "zoea-introspect",
+				content: "ok",
+				display: false,
+				details: {
+					version: 1,
+					commands: pi.getCommands(),
+					tools: pi.getAllTools(),
+				},
+			});
+		},
+	});
 }
