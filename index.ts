@@ -421,7 +421,17 @@ async function buildShellCommand(
 		? [tool.tool.command, ...argv.slice(1).map(shellQuote)].join(" ")
 		: argv.map(shellQuote).join(" ");
 
-	const zoeaDir = process.env.ZOEA_DIR ?? ".zoea";
+	// Always export ZOEA_DIR as an absolute path. Tools and downstream
+	// utilities embed it in JSON results (artifact paths) where a relative
+	// path is brittle: it implicitly depends on the tool's cwd, which can
+	// drift between callers. Resolve against the session cwd (the user's
+	// project root), then fall back to process.cwd() for the rare case where
+	// no session is bound.
+	const zoeaDirRaw = process.env.ZOEA_DIR ?? ".zoea";
+	const zoeaDirBase = options.sessionCwd ?? process.cwd();
+	const zoeaDir = path.isAbsolute(zoeaDirRaw)
+		? zoeaDirRaw
+		: path.resolve(zoeaDirBase, zoeaDirRaw);
 	// ZOEA_PROJECT_DIR pins zoea-core's project root to the session's
 	// working dir. Without it, zoea-core falls back to process.cwd(),
 	// which is the tool's own cwd (typically the manifest's parent like
