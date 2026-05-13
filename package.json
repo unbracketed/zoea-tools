@@ -18,7 +18,8 @@
     "typescript": "^5.9.3"
   },
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": ["./index.ts"],
+    "skills": ["skills"]
   },
   "files": ["index.ts", "README.md", "examples"]
 }
